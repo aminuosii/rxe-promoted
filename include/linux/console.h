@@ -47,7 +47,7 @@ struct consw {
 	int	(*con_font_copy)(struct vc_data *, int);
 	int     (*con_resize)(struct vc_data *, unsigned int, unsigned int,
 			       unsigned int);
-	int	(*con_set_palette)(struct vc_data *, unsigned char *);
+	int	(*con_set_palette)(struct vc_data *, const unsigned char *);
 	int	(*con_scrolldelta)(struct vc_data *, int);
 	int	(*con_set_origin)(struct vc_data *);
 	void	(*con_save_screen)(struct vc_data *);
@@ -115,6 +115,7 @@ static inline int con_debug_leave(void)
 #define CON_BOOT	(8)
 #define CON_ANYTIME	(16) /* Safe to call when cpu is offline */
 #define CON_BRL		(32) /* Used for a braille device */
+#define CON_EXTENDED	(64) /* Use the extended output format a la /dev/kmsg */
 
 struct console {
 	char	name[16];
@@ -123,7 +124,7 @@ struct console {
 	struct tty_driver *(*device)(struct console *, int *);
 	void	(*unblank)(void);
 	int	(*setup)(struct console *, char *);
-	int	(*early_setup)(void);
+	int	(*match)(struct console *, char *name, int idx, char *options);
 	short	flags;
 	short	index;
 	int	cflag;
@@ -141,7 +142,6 @@ extern int console_set_on_cmdline;
 extern struct console *early_console;
 
 extern int add_preferred_console(char *name, int idx, char *options);
-extern int update_console_cmdline(char *name, int idx, char *name_new, int idx_new, char *options);
 extern void register_console(struct console *);
 extern int unregister_console(struct console *);
 extern struct console *console_drivers;
@@ -150,6 +150,7 @@ extern int console_trylock(void);
 extern void console_unlock(void);
 extern void console_conditional_schedule(void);
 extern void console_unblank(void);
+extern void console_flush_on_panic(void);
 extern struct tty_driver *console_device(int *);
 extern void console_stop(struct console *);
 extern void console_start(struct console *);
@@ -190,6 +191,8 @@ void vcs_remove_sysfs(int index);
 
 #ifdef CONFIG_VGA_CONSOLE
 extern bool vgacon_text_force(void);
+#else
+static inline bool vgacon_text_force(void) { return false; }
 #endif
 
 #endif /* _LINUX_CONSOLE_H */

@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2009-2011 Mellanox Technologies Ltd. All rights reserved.
- * Copyright (c) 2009-2011 System Fabric Works, Inc. All rights reserved.
+ * Copyright (c) 2016 Mellanox Technologies Ltd. All rights reserved.
+ * Copyright (c) 2015 System Fabric Works, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -31,8 +31,6 @@
  * SOFTWARE.
  */
 
-/* srq implementation details */
-
 #include "rxe.h"
 #include "rxe_loc.h"
 #include "rxe_queue.h"
@@ -54,12 +52,6 @@ int rxe_srq_chk_attr(struct rxe_dev *rxe, struct rxe_srq *srq,
 
 		if (attr->max_wr <= 0) {
 			pr_warn("max_wr(%d) <= 0\n", attr->max_wr);
-			goto err1;
-		}
-
-		if (srq && !(rxe->attr.device_cap_flags &
-			IB_DEVICE_SRQ_RESIZE)) {
-			pr_warn("srq resize not supported\n");
 			goto err1;
 		}
 
@@ -113,15 +105,14 @@ int rxe_srq_from_init(struct rxe_dev *rxe, struct rxe_srq *srq,
 	int srq_wqe_size;
 	struct rxe_queue *q;
 
-	srq->event_handler	= init->event_handler;
-	srq->context		= init->srq_context;
+	srq->ibsrq.event_handler	= init->event_handler;
+	srq->ibsrq.srq_context		= init->srq_context;
 	srq->limit		= init->attr.srq_limit;
 	srq->srq_num		= srq->pelem.index;
 	srq->rq.max_wr		= init->attr.max_wr;
 	srq->rq.max_sge		= init->attr.max_sge;
 
-	srq_wqe_size		= sizeof(struct rxe_recv_wqe) +
-				  srq->rq.max_sge*sizeof(struct ib_sge);
+	srq_wqe_size		= rcv_wqe_size(srq->rq.max_sge);
 
 	spin_lock_init(&srq->rq.producer_lock);
 	spin_lock_init(&srq->rq.consumer_lock);
@@ -130,28 +121,22 @@ int rxe_srq_from_init(struct rxe_dev *rxe, struct rxe_srq *srq,
 			   srq_wqe_size);
 	if (!q) {
 		pr_warn("unable to allocate queue for srq\n");
-		err = -ENOMEM;
-		goto err1;
+		return -ENOMEM;
 	}
-
-	err = do_mmap_info(rxe, udata, 0, context, q->buf,
-			   q->buf_size, &q->ip);
-	if (err)
-		goto err2;
 
 	srq->rq.queue = q;
 
-	if (udata && udata->outlen >= sizeof(struct mminfo) + sizeof(u32))
-		return copy_to_user(udata->outbuf + sizeof(struct mminfo),
-			&srq->srq_num, sizeof(u32));
-	else
-		return 0;
+	err = do_mmap_info(rxe, udata, false, context, q->buf,
+			   q->buf_size, &q->ip);
+	if (err)
+		return err;
 
-err2:
-	kvfree(q->buf);
-	kfree(q);
-err1:
-	return err;
+	if (udata && udata->outlen >= sizeof(struct mminfo) + sizeof(u32)) {
+		if (copy_to_user(udata->outbuf + sizeof(struct mminfo),
+				 &srq->srq_num, sizeof(u32)))
+			return -EFAULT;
+	}
+	return 0;
 }
 
 int rxe_srq_from_attr(struct rxe_dev *rxe, struct rxe_srq *srq,
@@ -176,13 +161,16 @@ int rxe_srq_from_attr(struct rxe_dev *rxe, struct rxe_srq *srq,
 			udata->outbuf = (void __user *)(unsigned long)mi_addr;
 			udata->outlen = sizeof(mi);
 
-			err = ib_copy_to_udata(udata, &mi, sizeof(mi));
-			if (err)
+			if (!access_ok(VERIFY_WRITE,
+				       (void __user *)udata->outbuf,
+					udata->outlen)) {
+				err = -EFAULT;
 				goto err1;
+			}
 		}
 
 		err = rxe_queue_resize(q, (unsigned int *)&attr->max_wr,
-				       RCV_WQE_SIZE(srq->rq.max_sge),
+				       rcv_wqe_size(srq->rq.max_sge),
 				       srq->rq.queue->ip ?
 						srq->rq.queue->ip->context :
 						NULL,
@@ -202,12 +190,4 @@ err2:
 	srq->rq.queue = NULL;
 err1:
 	return err;
-}
-
-void rxe_srq_cleanup(void *arg)
-{
-	struct rxe_srq *srq = (struct rxe_srq *)arg;
-
-	if (srq->rq.queue)
-		rxe_queue_cleanup(srq->rq.queue);
 }

@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2009-2011 Mellanox Technologies Ltd. All rights reserved.
- * Copyright (c) 2009-2011 System Fabric Works, Inc. All rights reserved.
+ * Copyright (c) 2016 Mellanox Technologies Ltd. All rights reserved.
+ * Copyright (c) 2015 System Fabric Works, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -38,17 +38,26 @@
 
 int do_mmap_info(struct rxe_dev *rxe,
 		 struct ib_udata *udata,
-		 int offset,
+		 bool is_req,
 		 struct ib_ucontext *context,
 		 struct rxe_queue_buf *buf,
 		 size_t buf_size,
 		 struct rxe_mmap_info **ip_p)
 {
 	int err;
+	u32 len, offset;
 	struct rxe_mmap_info *ip = NULL;
 
 	if (udata) {
-		if ((udata->outlen - offset) < sizeof(struct mminfo))
+		if (is_req) {
+			len = udata->outlen - sizeof(struct mminfo);
+			offset = sizeof(struct mminfo);
+		} else {
+			len = udata->outlen;
+			offset = 0;
+		}
+
+		if (len < sizeof(ip->info))
 			goto err1;
 
 		ip = rxe_create_mmap_info(rxe, buf_size, context, buf);
@@ -107,7 +116,7 @@ struct rxe_queue *rxe_queue_init(struct rxe_dev *rxe,
 	num_slots = roundup_pow_of_two(num_slots);
 	q->index_mask = num_slots - 1;
 
-	buf_size = sizeof(struct rxe_queue_buf) + num_slots*elem_size;
+	buf_size = sizeof(struct rxe_queue_buf) + num_slots * elem_size;
 
 	q->buf = vmalloc_user(buf_size);
 	if (!q->buf)
@@ -115,9 +124,6 @@ struct rxe_queue *rxe_queue_init(struct rxe_dev *rxe,
 
 	q->buf->log2_elem_size = q->log2_elem_size;
 	q->buf->index_mask = q->index_mask;
-
-	q->buf->producer_index = 0;
-	q->buf->consumer_index = 0;
 
 	q->buf_size = buf_size;
 
@@ -130,15 +136,13 @@ err1:
 	return NULL;
 }
 
-/* copies elements from original q to new q and then
-   swaps the contents of the two q headers. This is
-   so that if anyone is holding a pointer to q it will
-   still work */
+/* copies elements from original q to new q and then swaps the contents of the
+ * two q headers. This is so that if anyone is holding a pointer to q it will
+ * still work
+ */
 static int resize_finish(struct rxe_queue *q, struct rxe_queue *new_q,
 			 unsigned int num_elem)
 {
-	struct rxe_queue temp;
-
 	if (!queue_empty(q) && (num_elem < queue_count(q)))
 		return -EINVAL;
 
@@ -149,9 +153,7 @@ static int resize_finish(struct rxe_queue *q, struct rxe_queue *new_q,
 		advance_consumer(q);
 	}
 
-	temp = *q;
-	*q = *new_q;
-	*new_q = temp;
+	swap(*q, *new_q);
 
 	return 0;
 }
@@ -173,7 +175,7 @@ int rxe_queue_resize(struct rxe_queue *q,
 	if (!new_q)
 		return -ENOMEM;
 
-	err = do_mmap_info(new_q->rxe, udata, 0, context, new_q->buf,
+	err = do_mmap_info(new_q->rxe, udata, false, context, new_q->buf,
 			   new_q->buf_size, &new_q->ip);
 	if (err) {
 		vfree(new_q->buf);
@@ -187,8 +189,9 @@ int rxe_queue_resize(struct rxe_queue *q,
 		spin_lock_irqsave(producer_lock, flags);
 		err = resize_finish(q, new_q, num_elem);
 		spin_unlock_irqrestore(producer_lock, flags);
-	} else
+	} else {
 		err = resize_finish(q, new_q, num_elem);
+	}
 
 	spin_unlock_irqrestore(consumer_lock, flags1);
 

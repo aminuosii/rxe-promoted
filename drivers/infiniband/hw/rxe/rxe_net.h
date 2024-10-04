@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2009-2011 Mellanox Technologies Ltd. All rights reserved.
- * Copyright (c) 2009-2011 System Fabric Works, Inc. All rights reserved.
+ * Copyright (c) 2016 Mellanox Technologies Ltd. All rights reserved.
+ * Copyright (c) 2015 System Fabric Works, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -38,40 +38,14 @@
 #include <net/if_inet6.h>
 #include <linux/module.h>
 
-/* Should probably move to something other than an array...these can be big */
-#define RXE_MAX_IF_INDEX	(384)
-
-struct rxe_net_info {
-	struct rxe_dev		*rxe;
-	u8			port;
-	struct net_device	*ndev;
-	int			status;
+struct rxe_recv_sockets {
+	struct socket *sk4;
+	struct socket *sk6;
 };
 
-struct rxe_addr_info {
-	struct socket *sock4;
-	struct socket *sock6;
-};
+extern struct rxe_recv_sockets recv_sockets;
 
-extern struct rxe_addr_info addr_info;
-extern struct rxe_net_info net_info[RXE_MAX_IF_INDEX];
-extern spinlock_t net_info_lock;
-
-/* caller must hold net_dev_lock */
-static inline struct rxe_dev *net_to_rxe(struct net_device *ndev)
-{
-	return (ndev->ifindex >= RXE_MAX_IF_INDEX) ?
-		NULL : net_info[ndev->ifindex].rxe;
-}
-
-static inline u8 net_to_port(struct net_device *ndev)
-{
-	return net_info[ndev->ifindex].port;
-}
-
-void rxe_net_add(struct net_device *ndev);
-void rxe_net_up(struct net_device *ndev);
-void rxe_net_down(struct net_device *ndev);
+struct rxe_dev *rxe_net_add(struct net_device *ndev);
 
 int rxe_net_init(void);
 void rxe_net_exit(void);

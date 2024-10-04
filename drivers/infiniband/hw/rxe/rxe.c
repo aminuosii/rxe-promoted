@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2009-2011 Mellanox Technologies Ltd. All rights reserved.
- * Copyright (c) 2009-2011 System Fabric Works, Inc. All rights reserved.
+ * Copyright (c) 2016 Mellanox Technologies Ltd. All rights reserved.
+ * Copyright (c) 2015 System Fabric Works, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -37,31 +37,19 @@
 MODULE_AUTHOR("Bob Pearson, Frank Zago, John Groves, Kamal Heib");
 MODULE_DESCRIPTION("Soft RDMA transport");
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_VERSION("0.1");
+MODULE_VERSION("0.2");
 
 /* free resources for all ports on a device */
 static void rxe_cleanup_ports(struct rxe_dev *rxe)
 {
-	unsigned int port_num;
-	struct rxe_port *port;
+	kfree(rxe->port.pkey_tbl);
+	rxe->port.pkey_tbl = NULL;
 
-	for (port_num = 1; port_num <= rxe->num_ports; port_num++) {
-		port = &rxe->port[port_num - 1];
-
-		kfree(port->guid_tbl);
-		port->guid_tbl = NULL;
-
-		kfree(port->pkey_tbl);
-		port->pkey_tbl = NULL;
-	}
-
-	kfree(rxe->port);
-	rxe->port = NULL;
 }
 
-/* free resources for a rxe device
-   all objects created for this device
-   must have been destroyed */
+/* free resources for a rxe device all objects created for this device must
+ * have been destroyed
+ */
 static void rxe_cleanup(struct rxe_dev *rxe)
 {
 	rxe_pool_cleanup(&rxe->uc_pool);
@@ -71,7 +59,6 @@ static void rxe_cleanup(struct rxe_dev *rxe)
 	rxe_pool_cleanup(&rxe->qp_pool);
 	rxe_pool_cleanup(&rxe->cq_pool);
 	rxe_pool_cleanup(&rxe->mr_pool);
-	rxe_pool_cleanup(&rxe->fmr_pool);
 	rxe_pool_cleanup(&rxe->mw_pool);
 	rxe_pool_cleanup(&rxe->mc_grp_pool);
 	rxe_pool_cleanup(&rxe->mc_elem_pool);
@@ -86,14 +73,17 @@ void rxe_release(struct kref *kref)
 
 	rxe_cleanup(rxe);
 	ib_dealloc_device(&rxe->ib_dev);
-	module_put(THIS_MODULE);
-	rxe->ifc_ops->release(rxe);
 }
+
+void rxe_dev_put(struct rxe_dev *rxe)
+{
+	kref_put(&rxe->ref_cnt, rxe_release);
+}
+EXPORT_SYMBOL_GPL(rxe_dev_put);
 
 /* initialize rxe device parameters */
 static int rxe_init_device_param(struct rxe_dev *rxe)
 {
-	rxe->num_ports				= RXE_NUM_PORT;
 	rxe->max_inline_data			= RXE_MAX_INLINE_DATA;
 
 	rxe->attr.fw_ver			= RXE_FW_VER;
@@ -141,10 +131,8 @@ static int rxe_init_device_param(struct rxe_dev *rxe)
 }
 
 /* initialize port attributes */
-static int rxe_init_port_param(struct rxe_dev *rxe, unsigned int port_num)
+static int rxe_init_port_param(struct rxe_port *port)
 {
-	struct rxe_port *port = &rxe->port[port_num - 1];
-
 	port->attr.state		= RXE_PORT_STATE;
 	port->attr.max_mtu		= RXE_PORT_MAX_MTU;
 	port->attr.active_mtu		= RXE_PORT_ACTIVE_MTU;
@@ -165,74 +153,36 @@ static int rxe_init_port_param(struct rxe_dev *rxe, unsigned int port_num)
 	port->attr.active_speed		= RXE_PORT_ACTIVE_SPEED;
 	port->attr.phys_state		= RXE_PORT_PHYS_STATE;
 	port->mtu_cap			=
-				rxe_mtu_enum_to_int(RXE_PORT_ACTIVE_MTU);
+				ib_mtu_enum_to_int(RXE_PORT_ACTIVE_MTU);
 	port->subnet_prefix		= cpu_to_be64(RXE_PORT_SUBNET_PREFIX);
 
 	return 0;
 }
 
-/* initialize port state, note IB convention
-   that HCA ports are always numbered from 1 */
+/* initialize port state, note IB convention that HCA ports are always
+ * numbered from 1
+ */
 static int rxe_init_ports(struct rxe_dev *rxe)
 {
-	int err;
-	unsigned int port_num;
-	struct rxe_port *port;
+	struct rxe_port *port = &rxe->port;
 
-	rxe->port = kcalloc(rxe->num_ports, sizeof(struct rxe_port),
-			    GFP_KERNEL);
-	if (!rxe->port)
+	rxe_init_port_param(port);
+
+	if (!port->attr.pkey_tbl_len || !port->attr.gid_tbl_len)
+		return -EINVAL;
+
+	port->pkey_tbl = kcalloc(port->attr.pkey_tbl_len,
+			sizeof(*port->pkey_tbl), GFP_KERNEL);
+
+	if (!port->pkey_tbl)
 		return -ENOMEM;
 
-	for (port_num = 1; port_num <= rxe->num_ports; port_num++) {
-		port = &rxe->port[port_num - 1];
+	port->pkey_tbl[0] = 0xffff;
+	port->port_guid = rxe->ifc_ops->port_guid(rxe);
 
-		rxe_init_port_param(rxe, port_num);
-
-		if (!port->attr.pkey_tbl_len) {
-			err = -EINVAL;
-			goto err1;
-		}
-
-		port->pkey_tbl = kcalloc(port->attr.pkey_tbl_len,
-					 sizeof(*port->pkey_tbl), GFP_KERNEL);
-		if (!port->pkey_tbl) {
-			err = -ENOMEM;
-			goto err1;
-		}
-
-		port->pkey_tbl[0] = 0xffff;
-
-		if (!port->attr.gid_tbl_len) {
-			kfree(port->pkey_tbl);
-			err = -EINVAL;
-			goto err1;
-		}
-
-		port->guid_tbl = kcalloc(port->attr.gid_tbl_len,
-					 sizeof(*port->guid_tbl), GFP_KERNEL);
-		if (!port->guid_tbl) {
-			kfree(port->pkey_tbl);
-			err = -ENOMEM;
-			goto err1;
-		}
-
-		port->guid_tbl[0] = rxe->ifc_ops->port_guid(rxe, port_num);
-
-		spin_lock_init(&port->port_lock);
-	}
+	spin_lock_init(&port->port_lock);
 
 	return 0;
-
-err1:
-	while (--port_num >= 1) {
-		port = &rxe->port[port_num - 1];
-		kfree(port->pkey_tbl);
-		kfree(port->guid_tbl);
-	}
-
-	kfree(rxe->port);
-	return err;
 }
 
 /* init pools of managed objects */
@@ -275,34 +225,27 @@ static int rxe_init_pools(struct rxe_dev *rxe)
 	if (err)
 		goto err7;
 
-	err = rxe_pool_init(rxe, &rxe->fmr_pool, RXE_TYPE_FMR,
-			    rxe->attr.max_fmr);
-	if (err)
-		goto err8;
-
 	err = rxe_pool_init(rxe, &rxe->mw_pool, RXE_TYPE_MW,
 			    rxe->attr.max_mw);
 	if (err)
-		goto err9;
+		goto err8;
 
 	err = rxe_pool_init(rxe, &rxe->mc_grp_pool, RXE_TYPE_MC_GRP,
 			    rxe->attr.max_mcast_grp);
 	if (err)
-		goto err10;
+		goto err9;
 
 	err = rxe_pool_init(rxe, &rxe->mc_elem_pool, RXE_TYPE_MC_ELEM,
 			    rxe->attr.max_total_mcast_qp_attach);
 	if (err)
-		goto err11;
+		goto err10;
 
 	return 0;
 
-err11:
-	rxe_pool_cleanup(&rxe->mc_grp_pool);
 err10:
-	rxe_pool_cleanup(&rxe->mw_pool);
+	rxe_pool_cleanup(&rxe->mc_grp_pool);
 err9:
-	rxe_pool_cleanup(&rxe->fmr_pool);
+	rxe_pool_cleanup(&rxe->mw_pool);
 err8:
 	rxe_pool_cleanup(&rxe->mr_pool);
 err7:
@@ -341,6 +284,9 @@ static int rxe_init(struct rxe_dev *rxe)
 	spin_lock_init(&rxe->mmap_offset_lock);
 	spin_lock_init(&rxe->pending_lock);
 	INIT_LIST_HEAD(&rxe->pending_mmaps);
+	INIT_LIST_HEAD(&rxe->list);
+
+	mutex_init(&rxe->usdev_lock);
 
 	return 0;
 
@@ -350,33 +296,29 @@ err1:
 	return err;
 }
 
-int rxe_set_mtu(struct rxe_dev *rxe, unsigned int ndev_mtu,
-		unsigned int port_num)
+int rxe_set_mtu(struct rxe_dev *rxe, unsigned int ndev_mtu)
 {
-	struct rxe_port *port = &rxe->port[port_num - 1];
-	enum rxe_mtu mtu;
+	struct rxe_port *port = &rxe->port;
+	enum ib_mtu mtu;
 
 	mtu = eth_mtu_int_to_enum(ndev_mtu);
 
 	/* Make sure that new MTU in range */
-	mtu = mtu ? min_t(enum rxe_mtu, mtu, RXE_PORT_MAX_MTU): RXE_MTU_256;
+	mtu = mtu ? min_t(enum ib_mtu, mtu, RXE_PORT_MAX_MTU) : IB_MTU_256;
 
-	port->attr.active_mtu = rxe_mtu_to_ib_mtu(mtu);
-	port->mtu_cap = rxe_mtu_enum_to_int(mtu);
+	port->attr.active_mtu = mtu;
+	port->mtu_cap = ib_mtu_enum_to_int(mtu);
 
 	return 0;
 }
 EXPORT_SYMBOL(rxe_set_mtu);
 
-/* called by ifc layer to create new rxe device
-   caller should allocate memory for rxe by calling
-   ib_alloc_device */
+/* called by ifc layer to create new rxe device.
+ * The caller should allocate memory for rxe by calling ib_alloc_device.
+ */
 int rxe_add(struct rxe_dev *rxe, unsigned int mtu)
 {
 	int err;
-	unsigned port_num = 1;
-
-	__module_get(THIS_MODULE);
 
 	kref_init(&rxe->ref_cnt);
 
@@ -384,21 +326,18 @@ int rxe_add(struct rxe_dev *rxe, unsigned int mtu)
 	if (err)
 		goto err1;
 
-	err = rxe_set_mtu(rxe, mtu, port_num);
+	err = rxe_set_mtu(rxe, mtu);
 	if (err)
-		goto err2;
+		goto err1;
 
 	err = rxe_register_device(rxe);
 	if (err)
-		goto err2;
+		goto err1;
 
 	return 0;
 
-err2:
-	rxe_cleanup(rxe);
 err1:
-	kref_put(&rxe->ref_cnt, rxe_release);
-	module_put(THIS_MODULE);
+	rxe_dev_put(rxe);
 	return err;
 }
 EXPORT_SYMBOL(rxe_add);
@@ -408,7 +347,7 @@ void rxe_remove(struct rxe_dev *rxe)
 {
 	rxe_unregister_device(rxe);
 
-	rxe_release(&rxe->ref_cnt);
+	rxe_dev_put(rxe);
 }
 EXPORT_SYMBOL(rxe_remove);
 
@@ -436,6 +375,7 @@ static int __init rxe_module_init(void)
 
 static void __exit rxe_module_exit(void)
 {
+	rxe_remove_all();
 	rxe_net_exit();
 	rxe_cache_exit();
 

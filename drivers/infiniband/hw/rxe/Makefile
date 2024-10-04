@@ -1,6 +1,6 @@
-obj-$(CONFIG_INFINIBAND_RXE) += ib_rxe.o
+obj-$(CONFIG_RDMA_RXE) += rdma_rxe.o
 
-ib_rxe-y := \
+rdma_rxe-y := \
 	rxe.o \
 	rxe_comp.o \
 	rxe_req.o \
@@ -21,4 +21,4 @@ ib_rxe-y := \
 	rxe_mcast.o \
 	rxe_task.o \
 	rxe_net.o \
-	rxe_net_sysfs.o
+	rxe_sysfs.o

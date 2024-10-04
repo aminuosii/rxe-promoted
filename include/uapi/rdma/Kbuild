@@ -5,4 +5,5 @@ header-y += ib_user_sa.h
 header-y += ib_user_verbs.h
 header-y += rdma_netlink.h
 header-y += rdma_user_cm.h
-header-y += ib_rxe.h
+header-y += hfi/
+header-y += rdma_user_rxe.h

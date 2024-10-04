@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2009-2011 Mellanox Technologies Ltd. All rights reserved.
- * Copyright (c) 2009-2011 System Fabric Works, Inc. All rights reserved.
+ * Copyright (c) 2016 Mellanox Technologies Ltd. All rights reserved.
+ * Copyright (c) 2015 System Fabric Works, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -35,32 +35,32 @@
 #include "rxe_loc.h"
 
 /* info about object pools
-   note that mr, fmr and mw share a single index space
-   so that one can map an lkey to the correct type of object */
+ * note that mr and mw share a single index space
+ * so that one can map an lkey to the correct type of object
+ */
 struct rxe_type_info rxe_type_info[RXE_NUM_TYPES] = {
 	[RXE_TYPE_UC] = {
-		.name		= "rxe_uc",
+		.name		= "rxe-uc",
 		.size		= sizeof(struct rxe_ucontext),
 	},
 	[RXE_TYPE_PD] = {
-		.name		= "rxe_pd",
+		.name		= "rxe-pd",
 		.size		= sizeof(struct rxe_pd),
 	},
 	[RXE_TYPE_AH] = {
-		.name		= "rxe_ah",
+		.name		= "rxe-ah",
 		.size		= sizeof(struct rxe_ah),
 		.flags		= RXE_POOL_ATOMIC,
 	},
 	[RXE_TYPE_SRQ] = {
-		.name		= "rxe_srq",
+		.name		= "rxe-srq",
 		.size		= sizeof(struct rxe_srq),
 		.flags		= RXE_POOL_INDEX,
 		.min_index	= RXE_MIN_SRQ_INDEX,
 		.max_index	= RXE_MAX_SRQ_INDEX,
-		.cleanup	= rxe_srq_cleanup,
 	},
 	[RXE_TYPE_QP] = {
-		.name		= "rxe_qp",
+		.name		= "rxe-qp",
 		.size		= sizeof(struct rxe_qp),
 		.cleanup	= rxe_qp_cleanup,
 		.flags		= RXE_POOL_INDEX,
@@ -68,35 +68,27 @@ struct rxe_type_info rxe_type_info[RXE_NUM_TYPES] = {
 		.max_index	= RXE_MAX_QP_INDEX,
 	},
 	[RXE_TYPE_CQ] = {
-		.name		= "rxe_cq",
+		.name		= "rxe-cq",
 		.size		= sizeof(struct rxe_cq),
 		.cleanup	= rxe_cq_cleanup,
 	},
 	[RXE_TYPE_MR] = {
-		.name		= "rxe_mr",
+		.name		= "rxe-mr",
 		.size		= sizeof(struct rxe_mem),
 		.cleanup	= rxe_mem_cleanup,
 		.flags		= RXE_POOL_INDEX,
 		.max_index	= RXE_MAX_MR_INDEX,
 		.min_index	= RXE_MIN_MR_INDEX,
 	},
-	[RXE_TYPE_FMR] = {
-		.name		= "rxe_fmr",
-		.size		= sizeof(struct rxe_mem),
-		.cleanup	= rxe_mem_cleanup,
-		.flags		= RXE_POOL_INDEX,
-		.max_index	= RXE_MAX_FMR_INDEX,
-		.min_index	= RXE_MIN_FMR_INDEX,
-	},
 	[RXE_TYPE_MW] = {
-		.name		= "rxe_mw",
+		.name		= "rxe-mw",
 		.size		= sizeof(struct rxe_mem),
 		.flags		= RXE_POOL_INDEX,
 		.max_index	= RXE_MAX_MW_INDEX,
 		.min_index	= RXE_MIN_MW_INDEX,
 	},
 	[RXE_TYPE_MC_GRP] = {
-		.name		= "rxe_mc_grp",
+		.name		= "rxe-mc_grp",
 		.size		= sizeof(struct rxe_mc_grp),
 		.cleanup	= rxe_mc_cleanup,
 		.flags		= RXE_POOL_KEY,
@@ -104,7 +96,7 @@ struct rxe_type_info rxe_type_info[RXE_NUM_TYPES] = {
 		.key_size	= sizeof(union ib_gid),
 	},
 	[RXE_TYPE_MC_ELEM] = {
-		.name		= "rxe_mc_elem",
+		.name		= "rxe-mc_elem",
 		.size		= sizeof(struct rxe_mc_elem),
 		.flags		= RXE_POOL_ATOMIC,
 	},
@@ -112,7 +104,7 @@ struct rxe_type_info rxe_type_info[RXE_NUM_TYPES] = {
 
 static inline char *pool_name(struct rxe_pool *pool)
 {
-	return rxe_type_info[pool->type].name + 4;
+	return rxe_type_info[pool->type].name;
 }
 
 static inline struct kmem_cache *pool_cache(struct rxe_pool *pool)
@@ -136,14 +128,13 @@ int rxe_cache_init(void)
 
 	for (i = 0; i < RXE_NUM_TYPES; i++) {
 		type = &rxe_type_info[i];
-		size = (type->size + RXE_POOL_ALIGN - 1) &
-				~(RXE_POOL_ALIGN - 1);
+		size = ALIGN(type->size, RXE_POOL_ALIGN);
 		type->cache = kmem_cache_create(type->name, size,
 				RXE_POOL_ALIGN,
 				RXE_POOL_CACHE_FLAGS, NULL);
 		if (!type->cache) {
-			pr_info("Unable to init kmem cache for %s\n",
-				type->name);
+			pr_err("Unable to init kmem cache for %s\n",
+			       type->name);
 			err = -ENOMEM;
 			goto err1;
 		}
@@ -215,8 +206,7 @@ int rxe_pool_init(
 	pool->rxe		= rxe;
 	pool->type		= type;
 	pool->max_elem		= max_elem;
-	pool->elem_size		= (size + RXE_POOL_ALIGN - 1) &
-					~(RXE_POOL_ALIGN - 1);
+	pool->elem_size		= ALIGN(size, RXE_POOL_ALIGN);
 	pool->flags		= rxe_type_info[type].flags;
 	pool->tree		= RB_ROOT;
 	pool->cleanup		= rxe_type_info[type].cleanup;
@@ -249,30 +239,28 @@ out:
 static void rxe_pool_release(struct kref *kref)
 {
 	struct rxe_pool *pool = container_of(kref, struct rxe_pool, ref_cnt);
-	unsigned long flags;
 
-	spin_lock_irqsave(&pool->pool_lock, flags);
 	pool->state = rxe_pool_invalid;
-	spin_unlock_irqrestore(&pool->pool_lock, flags);
-
 	kfree(pool->table);
+}
+
+static void rxe_pool_put(struct rxe_pool *pool)
+{
+	kref_put(&pool->ref_cnt, rxe_pool_release);
 }
 
 int rxe_pool_cleanup(struct rxe_pool *pool)
 {
-	int num_elem;
 	unsigned long flags;
 
 	spin_lock_irqsave(&pool->pool_lock, flags);
 	pool->state = rxe_pool_invalid;
+	if (atomic_read(&pool->num_elem) > 0)
+		pr_warn("%s pool destroyed with unfree'd elem\n",
+			pool_name(pool));
 	spin_unlock_irqrestore(&pool->pool_lock, flags);
 
-	num_elem = atomic_read(&pool->num_elem);
-	if (num_elem > 0)
-		pr_warn("%s pool destroyed with %d unfree'd elem\n",
-			pool_name(pool), num_elem);
-
-	kref_put(&pool->ref_cnt, rxe_pool_release);
+	rxe_pool_put(pool);
 
 	return 0;
 }
@@ -301,8 +289,10 @@ static void insert_index(struct rxe_pool *pool, struct rxe_pool_entry *new)
 		parent = *link;
 		elem = rb_entry(parent, struct rxe_pool_entry, node);
 
-		if (elem->index == new->index)
+		if (elem->index == new->index) {
+			pr_warn("element already exists!\n");
 			goto out;
+		}
 
 		if (elem->index > new->index)
 			link = &(*link)->rb_left;
@@ -330,8 +320,10 @@ static void insert_key(struct rxe_pool *pool, struct rxe_pool_entry *new)
 		cmp = memcmp((u8 *)elem + pool->key_offset,
 			     (u8 *)new + pool->key_offset, pool->key_size);
 
-		if (cmp == 0)
+		if (cmp == 0) {
+			pr_warn("key already exists!\n");
 			goto out;
+		}
 
 		if (cmp > 0)
 			link = &(*link)->rb_left;
@@ -397,12 +389,7 @@ void *rxe_alloc(struct rxe_pool *pool)
 	struct rxe_pool_entry *elem;
 	unsigned long flags;
 
-	if (!(pool->flags & RXE_POOL_ATOMIC) &&
-	    (in_irq() || irqs_disabled())) {
-		pr_warn("pool alloc %s in context %d/%d\n",
-			pool_name(pool), (int)in_irq(),
-			(int)irqs_disabled());
-	}
+	might_sleep_if(!(pool->flags & RXE_POOL_ATOMIC));
 
 	spin_lock_irqsave(&pool->pool_lock, flags);
 	if (pool->state != rxe_pool_valid) {
@@ -416,8 +403,8 @@ void *rxe_alloc(struct rxe_pool *pool)
 
 	if (atomic_inc_return(&pool->num_elem) > pool->max_elem) {
 		atomic_dec(&pool->num_elem);
-		kref_put(&pool->rxe->ref_cnt, rxe_release);
-		kref_put(&pool->ref_cnt, rxe_pool_release);
+		rxe_dev_put(pool->rxe);
+		rxe_pool_put(pool);
 		return NULL;
 	}
 
@@ -442,8 +429,8 @@ void rxe_elem_release(struct kref *kref)
 
 	kmem_cache_free(pool_cache(pool), elem);
 	atomic_dec(&pool->num_elem);
-	kref_put(&pool->rxe->ref_cnt, rxe_release);
-	kref_put(&pool->ref_cnt, rxe_pool_release);
+	rxe_dev_put(pool->rxe);
+	rxe_pool_put(pool);
 }
 
 void *rxe_pool_get_index(struct rxe_pool *pool, u32 index)
